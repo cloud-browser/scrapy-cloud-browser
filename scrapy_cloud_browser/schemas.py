@@ -1,7 +1,13 @@
 from collections.abc import Awaitable, Callable
-from typing import Literal, Union, Optional
+from typing import Union, Optional
+from enum import Enum
 
 from pydantic import AnyUrl, BaseModel, ConfigDict, HttpUrl, PositiveInt, conlist, constr
+
+
+class ProxyOrdering(Enum):
+    RANDOM = 'random'
+    ROUND_ROBIN = 'round-robin'
 
 
 class SettingsScheme(BaseModel):
@@ -12,6 +18,8 @@ class SettingsScheme(BaseModel):
     INIT_HANDLER: Optional[str] = None
     PAGES_PER_BROWSER: Optional[PositiveInt] = 100
     START_SEMAPHORES: Optional[PositiveInt] = 10
-    PROXY_ORDERING: Optional[Literal['random', 'round-robin']] = 'random'
+    PROXY_ORDERING: Optional[ProxyOrdering] = ProxyOrdering.RANDOM
+    BROWSER_SETTINGS: Optional[dict] = None
+    FINGERPRINT: Optional[dict] = None
 
     model_config = ConfigDict(title='CLOUD_BROWSER')

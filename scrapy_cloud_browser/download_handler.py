@@ -4,7 +4,7 @@ import logging
 import random
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Optional, Union
+from typing import Optional, Union, Dict, Any
 
 import anyio
 import httpx
@@ -18,7 +18,7 @@ from twisted.internet.defer import Deferred
 
 from scrapy_cloud_browser.scenarist import connect
 from scrapy_cloud_browser.scenarist.browser import Browser
-from scrapy_cloud_browser.settings import SettingsScheme
+from scrapy_cloud_browser.schemas import ProxyOrdering, SettingsScheme
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,8 @@ class Options:
     timeout: int = 60
     init_handler: Optional[str] = None
     pages_per_browser: Optional[int] = None
+    browser_settings: Optional[Dict[str, Any]] = None
+    fingerprint: Optional[Dict[str, Any]] = None
 
 
 class BrowserContextWrapperError(Exception):
@@ -46,28 +48,32 @@ class FakeSemaphore:
 
 class ProxyManager:
     def __init__(
-        self, proxies: Union[list[str], Callable[[None], Awaitable[str]]], ordering: str
+        self, proxies: Union[list[str], Callable[[], Awaitable[str]]], ordering: str
     ) -> None:
-        assert ordering in ('random', 'round-robin')
+        ordering = ProxyOrdering(ordering)
 
         if isinstance(proxies, list):
-            if ordering == 'round-robin':
-                self.proxies = itertools.cycle(proxies)
+            if not proxies:
+                raise ValueError("Proxies list cannot be empty")
+
+            if ordering == ProxyOrdering.ROUND_ROBIN:
+                self._proxies = itertools.cycle(proxies)
+            elif ordering == ProxyOrdering.RANDOM:
+                self._proxies = proxies
             else:
-                self.proxies = proxies
+                raise ValueError(f'Unknown ordering type: {ordering}')
         elif asyncio.iscoroutinefunction(proxies):
-            self.proxies = proxies
+            self._proxies = proxies
         else:
-            raise ValueError('Proxies must be list or coroutine function')
+            raise ValueError('Proxies must be a list or a coroutine function')
 
     async def get(self) -> str:
-        if asyncio.iscoroutinefunction(self.proxies):
-            return await self.proxies()
-
-        if isinstance(self.proxies, itertools.cycle):
-            return str(next(self.proxies))
-
-        return str(random.choice(self.proxies))
+        if asyncio.iscoroutinefunction(self._proxies):
+            return await self._proxies()
+        elif isinstance(self._proxies, itertools.cycle):
+            return str(next(self._proxies))
+        else:
+            return str(random.choice(self._proxies))
 
 
 class BrowserContextWrapper:
@@ -102,7 +108,9 @@ class BrowserContextWrapper:
                 await self.connect()
                 logger.debug(f'{self.num}: check connection')
                 await self.check_connection()
-                logger.debug(f'{self.num}: put into queue with {self._browser_pool.qsize()} workers')
+                logger.debug(
+                    f'{self.num}: put into queue with {self._browser_pool.qsize()} workers'
+                )
                 await self._browser_pool.put(self)
                 # important: wait only if we put ourselves
                 logger.debug(f'{self.num}: wait for next task')
@@ -124,7 +132,8 @@ class BrowserContextWrapper:
                 try:
                     await self.browser.ping()
                     self._last_ok_heartbeat = True
-                except:
+                except Exception:
+                    logger.debug(f'{self.num}: Heartbeat ping failed')
                     self._last_ok_heartbeat = False
             else:
                 self._last_ok_heartbeat = False
@@ -151,7 +160,7 @@ class BrowserContextWrapper:
         self.browser = browser
         logger.debug(f'{self.num}: got browser: {self.browser}')
 
-        self._last_ok_heartbeat = True # noqa
+        self._last_ok_heartbeat = True  # noqa
 
         if self._options.pages_per_browser:
             self._pages_per_browser_left = self._options.pages_per_browser
@@ -175,19 +184,15 @@ class BrowserContextWrapper:
         if self.browser:
             try:
                 await self.browser.close()
-            except:
+            except Exception:
                 logger.exception('During browser close')
 
             self.browser = None
 
     def is_established_connection(self) -> bool:
-        if not isinstance(self.browser, Browser):
-            return False
-
-        return True
+        return isinstance(self.browser, Browser)
 
     async def check_connection(self):
-        # TODO: add necessary checks here
         try:
             await self.browser.ping()
         except:
@@ -197,9 +202,17 @@ class BrowserContextWrapper:
     async def get_ws_url(self, options: Options, proxy: str) -> str:
         async with httpx.AsyncClient(base_url=options.host) as client:
             async with self._start_sem:
+                request_data = {'proxy': proxy}
+
+                if options.browser_settings:
+                    request_data['browser_settings'] = options.browser_settings
+
+                if options.fingerprint:
+                    request_data['fingerprint'] = options.fingerprint
+
                 resp = await client.post(
                     '/profiles/one_time',
-                    json={'proxy': proxy, 'browser_settings': {'inactive_kill_timeout': 15}},
+                    json=request_data,
                     headers={'x-cloud-api-token': options.token},
                     timeout=options.timeout,
                 )
@@ -219,6 +232,8 @@ class CloudBrowserHandler:
             token=self.settings.API_TOKEN,
             init_handler=self.settings.INIT_HANDLER,
             pages_per_browser=self.settings.PAGES_PER_BROWSER,
+            browser_settings=self.settings.BROWSER_SETTINGS,
+            fingerprint=self.settings.FINGERPRINT,
         )
 
         self.browser_pool = asyncio.Queue()
@@ -238,8 +253,7 @@ class CloudBrowserHandler:
             self.workers.append(
                 asyncio.create_task(
                     BrowserContextWrapper(
-                        i, self.browser_pool, self.options, self.start_sem,
-                        self.proxy_manager
+                        i, self.browser_pool, self.options, self.start_sem, self.proxy_manager
                     ).run()
                 )
             )
@@ -272,10 +286,11 @@ class CloudBrowserHandler:
 
     async def _get_response(self, request: Request, browser: BrowserContextWrapper):
         page = await browser.browser.new_page()
-        headers = []
-        for name, values in request.headers.items():
-            for value in values:
-                headers.append({'name': name.decode(), 'value': value.decode()})
+        headers = [
+            {'name': name.decode(), 'value': value.decode()}
+            for name, values in request.headers.items()
+            for value in values
+        ]
 
         try:
             response = await page.request(

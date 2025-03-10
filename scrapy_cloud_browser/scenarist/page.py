@@ -104,32 +104,30 @@ class Page:
             status_code = params.get('responseStatusCode')
             location_header = next(
                 (
-                    header for header in params.get('responseHeaders', [])
+                    header
+                    for header in params.get('responseHeaders', [])
                     if header['name'].lower() == 'location'
                 ),
-                None
+                None,
             )
-            if (
-                status_code and
-                not (status_code in REDIRECT_STATUS_CODES and location_header)
-            ):
+            if status_code and not (status_code in REDIRECT_STATUS_CODES and location_header):
                 content = await self._connection.send(
                     'Fetch.getResponseBody',
                     {'requestId': request_id},
                     session_id=self._session_id,
                 )
                 nonlocal response
-                response.set_result(Response(
-                    params['request']['url'],
-                    params['responseStatusCode'],
-                    params['responseHeaders'],
-                    base64.b64decode(content['body']),
-                ))
+                response.set_result(
+                    Response(
+                        params['request']['url'],
+                        params['responseStatusCode'],
+                        params['responseHeaders'],
+                        base64.b64decode(content['body']),
+                    )
+                )
 
                 self._connection.remove_handler(
-                    'Fetch.requestPaused',
-                    interceptor,
-                    session_id=self._session_id
+                    'Fetch.requestPaused', interceptor, session_id=self._session_id
                 )
                 self._connection.add_handler(
                     'Fetch.requestPaused',

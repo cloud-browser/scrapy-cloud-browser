@@ -14,9 +14,7 @@ class Browser:
         await self._connection.send('Browser.getVersion')
 
     async def new_page(self):
-        target_id = (
-            await self._connection.send('Target.createTarget', {'url': ''})
-        )['targetId']
+        target_id = (await self._connection.send('Target.createTarget', {'url': ''}))['targetId']
         session_id = (
             await self._connection.send(
                 'Target.attachToTarget',

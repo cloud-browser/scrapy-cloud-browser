@@ -25,7 +25,9 @@ class Connection:
         self._event_handlers: dict[str, set[Callable]] = defaultdict(set)
         self._session_event_handlers: dict[str, set[Callable]] = defaultdict(set)
 
-    async def send(self, method: str, params: Optional[dict] = None, *, session_id: Optional[str] = None):
+    async def send(
+        self, method: str, params: Optional[dict] = None, *, session_id: Optional[str] = None
+    ):
         self._last_id += 1
 
         callback = asyncio.Future()
@@ -50,7 +52,7 @@ class Connection:
                 producer_task = asyncio.create_task(self._events_producer(websocket))
                 consumer_task = asyncio.create_task(self._events_consumer(websocket))
 
-                done, pending = await asyncio.wait(
+                _, pending = await asyncio.wait(
                     [producer_task, consumer_task],
                     return_when=asyncio.FIRST_COMPLETED,
                 )
